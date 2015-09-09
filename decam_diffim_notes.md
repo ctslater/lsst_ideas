@@ -1,24 +1,29 @@
 Decam diffim processing 9/8/2015
 ======
 
-This is a running log of my attempts to run image differencing on some sample Decam images. This is related to [DM-3213](https://jira.lsstcorp.org/browse/DM-3213) and I am starting from these branches.
+This is a running log of my attempts to run image differencing on some sample Decam images. This is related to [DM-3213](https://jira.lsstcorp.org/browse/DM-3213) and I am starting from these branches. I have not sanitized this of self-inflicted mistakes.
 
 Ingest Images
 --
 
-	cd obs_decam
-	setup -r . -t w_2015_36
-	cd ~
-	ingestImagesDecam.py decam_data/ -n --mode link --create
-	RuntimeError: No mapper provided and no _mapper available
-	echo lsst.obs.decam.DecamInstcalMapper > decam_repo/_mapper
-	Mistake — ingestImageDecam.py OUTPUT_REPO —params INPUT
-	ingestImagesDecam.py decam_repo -n --mode link --create decam_data
+	
+```shell
+{0} lsst_dev % cd obs_decam
+{0} obs_decam % setup -r . -t w_2015_36
+{0} obs_decam % cd ~
+{0} ~ % ingestImagesDecam.py decam_data/ -n --mode link --create
+RuntimeError: No mapper provided and no _mapper available
+{0} ~ % echo lsst.obs.decam.DecamInstcalMapper > decam_repo/_mapper
+```
+
+My mistake, the parameter order is `ingestImageDecam.py OUTPUT_REPO —params INPUT`
+
+	{0} ~ % ingestImagesDecam.py decam_repo -n --mode link --create decam_data
 	  File "/Users/ctslater/lsst_dev/obs_decam/config/ingest.py", line 2, in <module>
 	    config.parse.retarget(DecamParseTask)
 	NameError: name 'config' is not defined
 
-This is because pex_config needed to be updated, since obs_decam had been updated to follow a change in pex.
+This is because I needed to update pex_config to master, since obs_decam had been updated to follow a change in pex. Self-inflicted.
 
 Ingest warnings:
 
@@ -26,15 +31,24 @@ Ingest warnings:
 	ingest.parse WARNING: Unable to find value for expTime (derived from EXPTIME)
 	ingest.parse WARNING: Error reading decam_data/instcal/tu1734245.fits.fz extensions set(['N28', 'N19', 'N23', 'N22', 'N21', 'N27', 'N26', 'N24', 'N29', 'N13', 'N12', 'N10', 'N11', 'N16', 'N17', 'N18', 'N31'])
 
-`processCcdDecam.py ./ --id visit=197395 ccdnum=10 --config calibrate.doPhotoCal=False calibrate.doAstrometry=False calibrate.measurePsf.starSelector.name="secondMoment" doWriteCalibrateMatches=False --clobber-config`
+```shell
+{0} ~ % processCcdDecam.py ./ --id visit=197395 ccdnum=10 \
+	 --config calibrate.doPhotoCal=False \
+	 calibrate.doAstrometry=False \
+	 calibrate.measurePsf.starSelector.name="secondMoment" \
+	 doWriteCalibrateMatches=False --clobber-config
+```
 
 Using visit=197391 ccdnum=10 and visit=197395 ccdnum=10, which overlap
-fwhm=7.5941 pixels
 
 side note:  eups declare  -t cts_decam -r ./
 
 After setting up Yusra’s DM-3213 branches in pipe_tasks, obs_decam, and (another package):
-imageDifferenceDecam.py decam_repo --id visit=197391 ccdnum=10 --config templateVisit=197395
+
+```shell
+{0} ~ % imageDifferenceDecam.py decam_repo --id visit=197391 ccdnum=10 \
+	--config templateVisit=197395
+```
 
 ## Issue 1 - Missing _pos in plugin name
 
@@ -65,12 +79,14 @@ this took forever, and was hung up in convolveWithBruteForce so adding doPreConv
 
 ## Issue 2 - Missing PointD
 
-	ImageDifference FATAL: Failed on dataId={'visit': 197391, 'ccdnum': 10}: 'PointD'
-	  File "/Users/ctslater/lsst_dev/pipe_tasks/python/lsst/pipe/tasks/imageDifference.py", line 334, in run
-	    kcQa = KernelCandidateQa(nparam)
-	  File "/Users/ctslater/lsst_dev/ip_diffim/python/lsst/ip/diffim/kernelCandidateQa.py", line 45, in __init__
-	    self.fields.append(afwTable.Field["PointD"]("RegisterRefPosition",
-	KeyError: 'PointD'
+```pytb
+ImageDifference FATAL: Failed on dataId={'visit': 197391, 'ccdnum': 10}: 'PointD'
+  File "/Users/ctslater/lsst_dev/pipe_tasks/python/lsst/pipe/tasks/imageDifference.py", line 334, in run
+    kcQa = KernelCandidateQa(nparam)
+  File "/Users/ctslater/lsst_dev/ip_diffim/python/lsst/ip/diffim/kernelCandidateQa.py", line 45, in __init__
+    self.fields.append(afwTable.Field["PointD"]("RegisterRefPosition",
+KeyError: 'PointD'
+```
 
 ip_diffim is attempting to create a table field type PointD, but these types have been removed from afw as of a [commit May 11](https://github.com/lsst/afw/commit/98db935a7a3d51ee52fa5571e7aaea9272fc0867). “These have been superseded by FunctorKeys"
 
@@ -145,12 +161,19 @@ If I edit imageDifference.py so that the makeSubtask argument passes the real sc
     Field with name 'base_PeakLikelihoodFlux_flux' already present in schema. {0}
 	lsst::pex::exceptions::InvalidParameterError: 'Field with name 'base_PeakLikelihoodFlux_flux' already present in schema.'
 
-I removed the PeakLikelihoodFlux measurement, since it was the only conflict between the schemas, and then had sfm add its fields to the schema at the start.
+I removed the PeakLikelihoodFlux measurement, since it was the only conflict between the schemas, and then had sfm add its fields to the schema at the start. [This commit](https://github.com/lsst/pipe_tasks/commit/0b1970b38df7897bbb4a46824d0d50ad8e9fc760) is probably related.
 
-Issue #5 - Shape measurement
+## Issue #5 - Shape measurement
 
 A million errors of the form:
 
+	ImageDifference: Running diaSource detection
+	ImageDifference.detection: Detected 1486 positive sources to 5 sigma.
+	ImageDifference.detection: Detected 1328 negative sources to 5 sigma
+	ImageDifference: Merging detections into 2474 sources
+	ImageDifference: Running diaSource measurement
+	ImageDifference.measurement: Measuring 2474 sources (2474 parents, 0 children) 
+	...
 	ImageDifference.measurement WARNING: Error in base_SdssCentroid.measure on record 84778831902150188:
 	  File "src/SdssCentroid.cc", line 270, in void lsst::meas::base::(anonymous namespace)::doMeasureCentroidImpl(double *, double *, double *, double *, double *, double *, double *, MaskedImageXy_locatorT, double, lsst::meas::base::FlagHandler) [MaskedImageXy_locatorT = lsst::afw::image::MaskedImage<float, unsigned short, float>::MaskedImageLocator<boost::gil::memory_based_2d_locator<boost::gil::memory_based_step_iterator<boost::gil::pixel<float, boost::gil::layout<boost::mpl::vector1<boost::gil::gray_color_t>, boost::mpl::range_c<int, 0, 1> > > *> >, boost::gil::memory_based_2d_locator<boost::gil::memory_based_step_iterator<boost::gil::pixel<unsigned short, boost::gil::layout<boost::mpl::vector1<boost::gil::gray_color_t>, boost::mpl::range_c<int, 0, 1> > > *> >, boost::gil::memory_based_2d_locator<boost::gil::memory_based_step_iterator<boost::gil::pixel<float, boost::gil::layout<boost::mpl::vector1<boost::gil::gray_color_t>, boost::mpl::range_c<int, 0, 1> > > *> > >]
 	    Object is not at a maximum: d2I/dx2, d2I/dy2 = -32.52 -59.0056 {0}
@@ -166,3 +189,43 @@ Also:
 	  File "src/InputUtilities.cc", line 123, in afw::geom::Point2D lsst::meas::base::SafeCentroidExtractor::operator()(afw::table::SourceRecord &, const lsst::meas::base::FlagHandler &) const
 	    base_CircularApertureFlux: Centroid slot value is NaN, but the Centroid slot flag is not set (is the executionOrder for base_CircularApertureFlux lower than that of the slot Centroid?) {0}
 	lsst::pex::exceptions::RuntimeError: 'base_CircularApertureFlux: Centroid slot value is NaN, but the Centroid slot flag is not set (is the executionOrder for base_CircularApertureFlux lower than that of the slot Centroid?)'
+
+
+## Subtracted Images
+
+I moved the write-out of the subtracted images up ahead of measurement, so I could proceed without having to sort out the measurement issue. The subtracted image has mis-registered the two images by a long shot, even though the input WCS on both is excellent. Example:
+
+![Subtracted image](images/bad_subtraction.png?raw=true)
+
+Trying with doDebugRegister=True. That failed because the statistics expect to be able to separate blue from red objects, and we don't have that information.
+
+Trying with doUseRegister=False. We really don't need to re-fit sources to register the images, which is what I think it was doing. 
+
+Noted another problem along the way:
+
+	ImageDifference.subtract: Matching Psf FWHM 28.57 -> 28.56 pix
+
+Printing out the stars it used to measure the convolution kernel, they all seem ok (looking at them on the image). 
+
+In pipe_tasks/.../imageDifference.py, ~279, the initial estimates of the PSF width are way off:
+
+	scienceSigmaOrig 12.130
+	templateSigma 12.134
+
+This is coming straight from the exposure PSF, which looks good in ds9, into PsfAttributes.computeGaussianWidth(), which returns this giant number. If I pull up the psf directly, I wonder if X0 and Y0 are causing things downstream to behave weirdly? `PsfAttributes::computeGaussianWidth()` seems to make use of these values for centering, and that seems not right.
+
+	>>> scipsf.computeImage().getBBox()
+	Box2I(Point2I(974, 2791), Extent2I(25, 25))
+	>>> scipsf.computeImage().getX0()
+	974
+	>>> scipsf.computeImage().getY0()
+	2791
+
+
+---
+
+	ImageDifference.subtract: Template Wcs : 3.431725,-0.310506 -> 3.437166,-0.313098
+	ImageDifference.subtract: Science Wcs : 3.431725,-0.310481 -> 3.437167,-0.313073
+	ImageDifference.subtract: Astrometrically registering template to science image
+
+What are these numbers?
