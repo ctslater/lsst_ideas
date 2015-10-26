@@ -26,6 +26,11 @@ class ViewDiffimsTask(pipeBase.CmdLineTask):
     RunnerClass = TaskRunnerWithArgs
     _DefaultName="ViewDiffimsTask"
 
+    #def __init__(self, **kwargs):
+    #    pipeBase.CmdLineTask.__init__(self, **kwargs)
+    #    self.source_count = 0
+
+
     @classmethod
     def _makeArgumentParser(cls):
         """Create an argument parser
@@ -42,7 +47,9 @@ class ViewDiffimsTask(pipeBase.CmdLineTask):
             self.show_diff(sensorRef, display)
 
         diaSources = sensorRef.get("deepDiff_diaSrc", immediate=True)
-        print("ccd {:02d}, {:d} sources".format(sensorRef.dataId['ccdnum'], len(diaSources)))
+        source_count = len(diaSources)
+        print("ccd {:02d}, {:d} sources".format(sensorRef.dataId['ccdnum'], source_count))
+        return source_count
 
     def show_diff(self, sensorRef, display):
 
@@ -91,4 +98,6 @@ class ViewDiffimsTask(pipeBase.CmdLineTask):
 
 
 if __name__ == "__main__":
-    ViewDiffimsTask.parseAndRun()
+    taskResults = ViewDiffimsTask.parseAndRun(doReturnResults=True)
+    total_counts = sum(x.result for x in taskResults.resultList)
+    print("Total sources: {:d}".format(total_counts))
