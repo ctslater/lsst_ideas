@@ -4,11 +4,13 @@ from __future__ import print_function
 
 #import math
 #import numpy
+import pdb
 
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.afw.display as afwDisplay
 #from lsst.ip.diffim import SourceFlagChecker
+from lsst.pipe.tasks.coaddBase import SelectDataIdContainer
 import lsst.ip.diffim.utils as diUtils
 
 
@@ -18,6 +20,9 @@ class TaskRunnerWithArgs(pipeBase.TaskRunner):
     def getTargetList(parsedCmd, **kwargs):
         return pipeBase.TaskRunner.getTargetList(parsedCmd,
                                                  show_diff=parsedCmd.show_diff,
+                                                 show_threepanel=parsedCmd.show_threepanel,
+                                                 templateRefList=parsedCmd.templateId.refList,
+                                                 count_sources=parsedCmd.count_sources,
                                                  **kwargs)
 
 class ViewDiffimsTask(pipeBase.CmdLineTask):
@@ -37,19 +42,50 @@ class ViewDiffimsTask(pipeBase.CmdLineTask):
         """
         parser = pipeBase.ArgumentParser(name=cls._DefaultName)
         parser.add_id_argument("--id", "deepDiff_differenceExp", help="data ID, e.g. --id visit=12345 ccdnum=1")
+        parser.add_id_argument("--templateId", "calexp", help="template image ID, e.g. --templateId visit=6789 ccd=1",
+                               ContainerClass=pipeBase.DataIdContainer)
         parser.add_argument("--show-diff", action="store_true")
+        parser.add_argument("--show-threepanel", action="store_true")
+        parser.add_argument("--count-sources", action="store_true", help="Count image sources instead of difference image sources")
         return parser
 
-    def run(self, sensorRef, show_diff=False):
+    def run(self, sensorRef, show_diff=False, show_threepanel=False, templateRefList=None, count_sources=False):
 
-        display = afwDisplay.Display(frame=1)
-        if show_diff:
+        display_n = 1
+
+        if show_threepanel:
+            display = afwDisplay.Display(frame=display_n)
+            display_n += 1
+            self.show_original(sensorRef, display)
+
+            if templateRefList:
+                display = afwDisplay.Display(frame=display_n)
+                display_n += 1
+                self.show_original(templateRefList[0], display)
+
+        if show_diff or show_threepanel:
+            display = afwDisplay.Display(frame=display_n)
             self.show_diff(sensorRef, display)
 
-        diaSources = sensorRef.get("deepDiff_diaSrc", immediate=True)
-        source_count = len(diaSources)
-        print("ccd {:02d}, {:d} sources".format(sensorRef.dataId['ccdnum'], source_count))
+        if count_sources:
+            sources = sensorRef.get("src", immediate=True)
+            source_count = len(sources)
+            print("ccd {:02d}, {:d} raw image sources".format(sensorRef.dataId['ccdnum'], source_count))
+        else:
+            # count_sources = False means count difference image sources. Not ideal terminology here.
+            diaSources = sensorRef.get("deepDiff_diaSrc", immediate=True)
+            source_count = len(diaSources)
+            print("ccd {:02d}, {:d} raw DIA sources".format(sensorRef.dataId['ccdnum'], source_count))
+
         return source_count
+
+    def is_valid_source(self, source):
+        pdb.set_trace()
+        print(source)
+
+    def show_original(self, sensorRef, display):
+        calexp = sensorRef.get("calexp", immediate=True)
+        display.mtv(calexp)
 
     def show_diff(self, sensorRef, display):
 
