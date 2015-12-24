@@ -3,6 +3,7 @@ from __future__ import print_function, division
 
 import os
 import numpy as np
+import argparse
 
 from astroquery.vizier import Vizier
 import astropy.coordinates as coord
@@ -12,7 +13,6 @@ import sqlalchemy
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
-repo_dir = os.getenv("HOME") + "/decam_NEO_repo"
 
 Base = declarative_base()
 class SourceDetectionCorrelation(Base):
@@ -30,9 +30,10 @@ class SourceDetectionCorrelation(Base):
         return np.array([det.dist for det in self.detection_dists])
 
     def __repr__(self):
-        return "<SourceDetectionCorrelation(visit='{:d}', ccdnum='{:d}', source_mag='{:.2f}')>".format(self.visit,
-                                                                                                       self.ccdnum,
-                                                                                                       self.source_mag)
+        fmt_string =  "<SourceDetectionCorrelation(visit='{:d}', ccdnum='{:d}', source_mag='{:.2f}')>"
+        return(fmt_string.format(self.visit,
+                                 self.ccdnum,
+                                 self.source_mag))
 
 class DetectionDist(Base):
     __tablename__ = "DetectionDists"
@@ -104,7 +105,7 @@ def is_edge_object(catalog_sources, image_sources, image_xs, image_ys):
                   (image_ys[idx] > 4070 - buffer_size)
     return edge_object
 
-def star_diffim_correlation(visit, ccdnum, sql_session=None, debug=False):
+def star_diffim_correlation(visit, ccdnum, butler, sql_session=None, debug=False):
     """Find bright stars in the field and their diffim sources.
 
     This pulls the UCAC4 catalog from Vizier, centered on the chip center. It
@@ -117,6 +118,8 @@ def star_diffim_correlation(visit, ccdnum, sql_session=None, debug=False):
     sources. This will fail for any major shift, but accomodates the few
     arcsecond shift that I've seen.
 
+    The shift might be due to processing the images without TPV support.
+
     After shifting the UCAC sources, it loops through them and finds all
     diffim sources within one arcminute, then if `sql_session` is supplied, it
     adds these distance between the source star and the diffim detection to
@@ -124,11 +127,11 @@ def star_diffim_correlation(visit, ccdnum, sql_session=None, debug=False):
 
     """
 
-    b = dafPersist.Butler(repo_dir)
 
     try:
-        src = b.get("src", visit=visit, ccdnum=ccdnum, immediate=True)
-        diff_src = b.get("deepDiff_diaSrc", visit=visit, ccdnum=ccdnum, immediate=True)
+        src = butler.get("src", visit=visit, ccdnum=ccdnum, immediate=True)
+        diff_src = butler.get("deepDiff_diaSrc", visit=visit, ccdnum=ccdnum, immediate=True)
+        diff_img = butler.get("deepDiff_differenceExp", visit=visit, ccdnum=ccdnum, immediate=True)
     except:
         print("Could not load data for visit={:d}, ccdnum={:d}, skipping.".format(visit, ccdnum))
         return
@@ -150,19 +153,27 @@ def star_diffim_correlation(visit, ccdnum, sql_session=None, debug=False):
                                   dec=ucac_results[0]['DEJ2000'],
                                   unit=(u.deg, u.deg), frame="icrs")
 
-    sel_not_nan, = np.where(np.isfinite(diff_src.get('coord_ra')) &
-                            np.isfinite(diff_src.get('coord_dec')))
-    diasource_catalog = coord.SkyCoord(ra=diff_src.get('coord_ra')[sel_not_nan],
-                                       dec=diff_src.get('coord_dec')[sel_not_nan],
-                                       unit=(u.rad, u.rad), frame="icrs")
+    # I want either the positive value if it's not nan, or the negative value otherwise
+    diff_sources_x = diff_src.get("ip_diffim_NaiveDipoleCentroid_pos_x")
+    diff_sources_y = diff_src.get("ip_diffim_NaiveDipoleCentroid_pos_y")
+    pos_nan, = np.where(np.isnan(diff_sources_x) | np.isnan(diff_sources_y))
+    diff_sources_x[pos_nan] = diff_src.get("ip_diffim_NaiveDipoleCentroid_neg_x")[pos_nan]
+    diff_sources_y[pos_nan] = diff_src.get("ip_diffim_NaiveDipoleCentroid_neg_y")[pos_nan]
 
+    diff_wcs = diff_img.getWcs()
+
+    diff_coord_pairs = [diff_wcs.pixelToSky(x,y) for (x,y) in zip(diff_sources_x, diff_sources_y)]
+    diff_ra = np.array([pair[0].asDegrees() for pair in diff_coord_pairs])
+    diff_dec = np.array([pair[1].asDegrees() for pair in diff_coord_pairs])
+
+    diasource_catalog = coord.SkyCoord(ra=diff_ra, dec=diff_dec,
+                                       unit=(u.deg, u.deg), frame="icrs")
+
+    sources_x = src.get("base_SdssCentroid_x")
+    sources_y = src.get("base_SdssCentroid_y")
     source_catalog = coord.SkyCoord(ra=src.get('coord_ra'),
                                     dec=src.get('coord_dec'),
                                     unit=(u.rad, u.rad), frame="icrs")
-
-
-    sources_x = src.get('base_SdssCentroid_x')
-    sources_y = src.get('base_SdssCentroid_y')
 
     ucac_edge_object = is_edge_object(ucac_catalog, source_catalog,
                                       sources_x, sources_y)
@@ -186,6 +197,7 @@ def star_diffim_correlation(visit, ccdnum, sql_session=None, debug=False):
                                   frame='icrs')
 
 
+    print(len(sources_x), len(diasource_catalog), len(diff_src))
     for ucac_coord,ucac_mag in zip(shifted_ucac, ok_ucac_mags):
         dists = ucac_coord.separation(diasource_catalog)
         sel, = np.where(dists < 1*u.arcmin)
@@ -216,10 +228,15 @@ def run_debug(session):
 
 if __name__ == "__main__":
 
-    # Implementing command line flags would be smart.
-    debug = False
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action='store_true', help="Enable debugging")
+    parser.add_argument("repo", help="Repository for images")
+    parser.add_argument("visits", help="VisitIDs to process", type=int, nargs="+")
+    parser.add_argument("--nccds", help="Maximum number of CCDS to process (for debugging, by default 62)",
+                        type=int, action="store", default=62)
+    args = parser.parse_args()
 
-    if debug:
+    if args.debug:
         engine = sqlalchemy.create_engine('sqlite://')
     else:
         engine = sqlalchemy.create_engine('sqlite:///star_diffim.sqlite3')
@@ -229,13 +246,15 @@ if __name__ == "__main__":
     session = SessionFactory()
     Base.metadata.create_all(engine)
 
-    if debug:
+    if args.debug:
         run_debug(session)
     else:
         import lsst.daf.persistence as dafPersist
-        for ccdnum in range(1,60):
-            print("------------")
-            print("ccdnum: {:d}".format(ccdnum))
-            star_diffim_correlation(197391, ccdnum, sql_session=session)
-            session.commit()
+        butler = dafPersist.Butler(args.repo)
+        for visit in args.visits:
+            for ccdnum in range(1,args.nccds + 1):
+                print("------------")
+                print("visit {:d} ccdnum: {:d}".format(visit, ccdnum))
+                star_diffim_correlation(visit, ccdnum, butler, sql_session=session)
+                session.commit()
 
